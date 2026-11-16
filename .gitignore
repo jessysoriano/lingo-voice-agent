@@ -1,0 +1,22 @@
+# secrets: never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# eval outputs and recorded audio (may contain real user speech)
+results/*
+!results/.gitkeep
+evals/audio/
+fixtures/raw/
