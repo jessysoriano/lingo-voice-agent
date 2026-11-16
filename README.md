@@ -1,22 +1,9 @@
 # Lingo: a pronunciation-coach voice agent on AssemblyAI
 
-A reference voice agent for a language-learning product. The learner asks out loud how to say a word or phrase in another language. Lingo says it in a native voice, gives a "sounds like" line, listens to the learner try it, and tells them which word did not come through.
+A reference voice agent for a language-learning product. The learner asks out loud how to say a word or phrase in another language. Lingo says it in one clear voice (alba), shows the respelling on screen, gives a "sounds like" line, listens to the learner try it, and tells them which word did not come through.
 
 It is built on AssemblyAI's [Voice Agent API](https://www.assemblyai.com/docs/voice-agents/voice-agent-api) (speech recognition, the language model and the voice over one WebSocket), and it comes with the guardrails, tests and evaluation harness I would use to win a head-to-head technical evaluation against the customer's current vendor.
 
-| Assignment asks for | Where it is |
-|---|---|
-| A working reference voice agent | `src/lingua_agent/`, run with `lingua-agent` |
-| How to run it, how it is built | This README |
-| How to win the customer's evaluation | [`evals/EVAL_PLAN.md`](evals/EVAL_PLAN.md), the harness in `evals/`, and [the summary below](#how-i-would-win-the-evaluation) |
-| Extra credit: a short creative demo | [Shadow mode](#extra-credit-shadow-mode) |
-
-## Status, stated plainly
-
-- **Run live:** two recorded sessions against the real API. The agent connected, called the lesson tool, spoke the lesson and returned zero errors. Those sessions exposed six problems, all fixed since (see [What the live sessions changed](#what-the-live-sessions-changed)).
-- **Unit-tested only, not yet run live:** switching to a native voice per language, attempt feedback (`check_attempt`), and prompt v5. They are built from AssemblyAI's documented events and covered by tests against a scripted socket.
-- **Not done:** the bake-off against the incumbent (needs their keys and recorded learner audio), a fluent-speaker listening check per language, and phoneme-level accent scoring.
-- 133 tests, 99% line coverage, lint clean. An offline guardrail eval of 62 labeled cases gates CI.
 
 ## Quick start
 
@@ -27,22 +14,22 @@ python -m venv .venv
 source .venv/bin/activate            # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -e ".[dev,audio]"        # audio needs PortAudio on macOS (brew install portaudio) and Linux (apt install libportaudio2)
 cp .env.example .env                 # Windows: copy .env.example .env    then add ASSEMBLYAI_API_KEY
-lingua-agent                         # talk to Lingo. Ctrl+C ends the call and prints the session report
+lingo-agent                         # talk to Lingo. Ctrl+C ends the call and prints the session report
 ```
 
 Things to try: "How do you say cookies in Spanish?", say it back wrong on purpose, "say that slower", then "and in French?".
 
 ```bash
-lingua-agent --language es           # start in the Spanish voice (es, fr, de, it, pt) instead of English
-lingua-agent --shadow "¿Dónde está la biblioteca?" --language es    # extra-credit mode
-lingua-agent -v                      # also print log lines (they are always saved to results/)
+lingo-agent --native-voices --language es   # experimental: native voice per language (es, fr, de, it, pt)
+lingo-agent --shadow "¿Dónde está la biblioteca?" --language es    # extra-credit mode
+lingo-agent -v                      # also print log lines (they are always saved to results/)
 
 pytest --cov                         # tests, with a 90% coverage gate
 ruff check .                         # lint
 python -m evals.run_offline_eval     # guardrail eval: no network, no key
 ```
 
-The terminal shows only the conversation, a line when the voice switches, errors and the final summary. Each run writes three files to `results/` (gitignored):
+The terminal shows only the conversation, the respelling for each lesson, errors and the final summary. Each run writes three files to `results/` (gitignored):
 
 | File | Contents |
 |---|---|
@@ -65,16 +52,16 @@ mic ──PCM16 24 kHz──▶ VoiceSession ══ WebSocket ══▶ Assembly
 
 One teaching turn:
 
-1. The learner asks "how do you say cookies in Spanish?".
-2. The model calls `teach_phrase` with the phrase and a pronunciation respelling. The code checks it: a language the API can speak, the right writing system, not the English echoed back, a speakable respelling, length, and a profanity policy.
-3. If the current voice is not Spanish, the tool answers `switch_language`. The client ends the session, opens a new one with the Spanish voice, and hands the request over so the learner does not repeat it.
-4. The Spanish voice says the phrase, then a "sounds like" line that the **code** built, then invites a try.
+1. The learner asks "how do you say 'X' in Spanish?".
+2. The model calls `teach_phrase` with the phrase and a pronunciation respelling. The code checks it: a language the API can speak, the right writing system, not the English echoed back, a respelling that uses only the allowed vowel spellings, length, and a profanity policy (vulgar requests are declined by default).
+3. The tool result goes back to the model, and the terminal prints the phrase with its respelling
+4. The voice (alba) says the phrase, then a "sounds like" line that the **code** built: lowercase, one syllable per beat. Then it invites a try.
 5. Whatever the learner says next is treated as an attempt. `check_attempt` compares the transcript with the phrase, names the word that missed and adds one tip ("the double l sounds like the y in yes").
 
 | Module | Job |
 |---|---|
 | `protocol.py` | The only file that knows message shapes and error codes |
-| `session.py` | The async loop: reconnect and resume, error classification, tools, barge-in, voice switching, shutdown |
+| `session.py` | The async loop: reconnect and resume, error classification, tools, barge-in, optional voice switching, shutdown |
 | `tutor.py` | `teach_phrase`: validates each lesson and builds the spoken breakdown |
 | `coaching.py` | `check_attempt`: attempt comparison and tips |
 | `guardrails.py` | PII, injection, voice-format, leak and over-claiming checks |
@@ -91,15 +78,15 @@ One teaching turn:
 
 **2. Teach through a tool call, because it is the only checkpoint before speech.** With speech-to-speech, the audio has gone out by the time the agent's transcript arrives, so output text can be audited but not blocked. Requiring the model to call `teach_phrase` first puts code between the model's proposal and the learner's ear. Two limits: the "call the tool first" rule is enforced by the prompt, not by the API, and the tool checks form, not whether the translation is right (the bake-off scores that against accepted translations).
 
-**3. The code writes the pronunciation lines, not the model.** In the first live sessions the model improvised the breakdown and it changed shape from lesson to lesson. The tool now returns `sounds_like` and `slow`, and the prompt says to read them as given. The slow syllable-by-syllable version is only used when the learner asks for "again" or "slower".
+**3. The code writes the pronunciation lines, not the model.** In the first live sessions the model improvised the breakdown and it changed shape from lesson to lesson. The tool now returns `sounds_like` and `slow`, and the prompt says to read them as given. The syllables are comma-separated because a live session showed the voice reads a hyphenated chunk such as "gah-YEH-tahs" as one English word. The slower version (longer pauses) is only used when the learner asks for "again" or "slower".
 
-**4. A native voice per language, switched by restarting the session.** The API fixes the voice when a session starts, and AssemblyAI documents each native voice as speaking its own language plus English. An English voice read "galletas" with English rules in a live session. So a request for another language ends the session and starts one with that language's voice. `conversation.message` carries the learner's request into the new session and `reply.create` makes it answer. Costs: lesson context is not kept across a switch, and there is a connection gap (recorded as `switch_p50_ms` in the report; not yet measured live).
+**4. One voice (alba) by default, native voices as an opt-in.** The API fixes the voice when a session starts, so a native voice per language means ending the session and starting a new one. I built that, and it works in tests. Live, the native voices read the English-style respelling as a long drawn-out sound and were harder to understand than alba. So the default is one clear voice, the respelling is printed on screen, and `--native-voices` turns switching on. The cost: alba says the foreign phrase itself with an English accent. Real accent needs the native voices (with a respelling they can read) or a separate pronunciation model.
 
 **5. Feedback claims only what a transcript can support.** The agent receives text, never the learner's sound. It can say whether a word was understood; it cannot hear an accent. The prompt forbids "your pronunciation was perfect" (the agent said exactly that in a live session), and a guardrail flags it if it happens anyway. See [Accent feedback](#accent-feedback-what-is-and-is-not-possible).
 
 **6. Tuned for learners.** Learners pause mid-sentence and mix languages. The config sets explicit turn-detection silence windows, a recognizer prompt naming the expected languages, and keyterms for common phrases. The silence window is a direct trade against latency, so it is one setting (`TURN_MIN_SILENCE_MS`, default 700) and the evaluation plan sweeps it.
 
-**7. Inline config by default, saved agents for production.** Inline config runs with only an API key and allows voice switching. A saved agent keeps prompt, voice and tools server-side, so prompt changes ship without a client release, but it has one voice. The production pattern is one saved agent per course language: `python scripts/create_agent.py --language es`, then run the client with `ASSEMBLYAI_AGENT_ID` set and the same `--language`.
+**7. Inline config by default, saved agents for production.** Inline config runs with only an API key. A saved agent keeps prompt, voice and tools server-side, so prompt changes ship without a client release, but it has one voice. The production pattern is one saved agent per course language: `python scripts/create_agent.py --language es`, then run the client with `ASSEMBLYAI_AGENT_ID` set and the same `--language`.
 
 **8. Production behavior.**
 - Reconnect with full-jitter backoff and `session.resume`. The retry budget resets after a healthy connection, and an expired session falls back to a new one.
@@ -118,7 +105,7 @@ One teaching turn:
 | Lesson content | `teach_phrase` validation | **Yes**, before the phrase is spoken |
 | Agent transcript | Markdown, URLs, emoji, length, canary leak, over-claiming pronunciation quality | No. It audits after the fact |
 
-Known limits, kept as `known_gap` cases in the eval instead of hidden: the deterministic checks cannot tell French from Spanish; the injection regex flags a learner who asks how to say "show me the instructions"; and bare praise such as "Perfect!" is not caught by the over-claiming check. The profanity list is a placeholder; `PROFANITY_POLICY=label|block` is the real control.
+Known limits, kept as `known_gap` cases in the eval instead of hidden: the deterministic checks cannot tell French from Spanish; the injection regex flags a learner who asks how to say "show me the instructions"; and bare praise such as "Perfect!" is not caught by the over-claiming check. The profanity list is a placeholder; `PROFANITY_POLICY` is the real control: `block` (the default) declines vulgar requests, `label` teaches and flags them.
 
 ## Evaluation
 
@@ -150,7 +137,7 @@ The full plan is in [`evals/EVAL_PLAN.md`](evals/EVAL_PLAN.md).
 
 ## What the live sessions changed
 
-Two recorded sessions showed what unit tests could not. Each finding is fixed and pinned by a test.
+Recorded sessions showed what unit tests could not. Each finding is fixed and pinned by a test.
 
 | The session showed | Cause | Fix |
 |---|---|---|
@@ -160,10 +147,12 @@ Two recorded sessions showed what unit tests could not. Each finding is fixed an
 | A rude request refused with no tool call | The prompt pre-empted the tool, so the profanity policy never ran | Every "how do I say" goes through the tool; the policy decides in code |
 | First audio about 2.4 s at p50 and 3.0 s at p95 (7 turns) | A 1000 ms silence window plus the tool round trip | Window is 700 ms and configurable; the report separates filler from lesson latency |
 | A wrong attempt answered with "I can only help with pronunciation" | A mispronounced word transcribes as nonsense and looked off-topic | The turn after a lesson is an attempt; `check_attempt` handles it |
-| "galletas" mispronounced, while its respelling sounded right | The default voice is American English | Native voice per language, with session switching |
+| "galletas" said with English rules by alba | The default voice is American English | Tried a native voice per language: harder to understand than alba reading the respelling. Kept alba, the respelling on screen, and native voices as an opt-in |
+| The spoken respelling sounded wrong ("guy-eech tas", "gras sigh az") | The voice reads hyphenated chunks as one English word, spells out all-caps, and reads "sy" as "sigh" | The code speaks lowercase syllables one beat at a time, and rejects respellings with vowels outside the key or a y after a consonant |
+| Wrong respellings ("gah-YET-ahs", "NYEE-nyoh") | The model writes the respelling | Per-language rules in the tool description, and a code check on the vowel spellings |
 | Eight languages offered | The API speaks six languages, and Korean is not on its recognition list either | Five teachable languages; others get a clear "can't speak that yet" |
 
-Still open: the respelling is written by the model and checked only for format. In one session it gave "gah-YET-ahs" for "galletas", where "gah-YEH-tahs" matches the syllables ga-lle-tas. A fluent speaker should spot-check respellings per language, and the bake-off should score them.
+Still open: the respelling is written by the model and checked only for form, so a wrong-sounding one can still pass. A fluent speaker should spot-check respellings per language, and the bake-off should score them.
 
 ## Accent feedback: what is and is not possible
 
@@ -173,7 +162,7 @@ Real accent feedback needs pronunciation assessment on the learner's audio. The 
 
 ## Extra credit: Shadow mode
 
-`lingua-agent --shadow "¿Dónde está la biblioteca?" --language es`
+`lingo-agent --shadow "¿Dónde está la biblioteca?" --language es`
 
 Karaoke for pronunciation. The phrase is on screen, and each word lights up as you say it (green understood, red wrong, grey not yet heard), driven by the streaming partial transcripts. Then the agent gives one sentence of feedback.
 
@@ -182,16 +171,16 @@ Two design choices keep it honest. It measures whether you were understood, not 
 ## Verified and not verified
 
 - **Confirmed live:** the `wss://agents.assemblyai.com/v1/ws` endpoint, inline session config, microphone audio in, reply audio out, both transcript events, `tool.call`, and `tool.result` sent on `reply.done`.
-- **From AssemblyAI's docs, covered by tests, not yet run live:** `session.resume`, `conversation.message` and `reply.create` (the voice-switch handoff), the native voice ids, and the saved-agent REST shape.
+- **From AssemblyAI's docs, covered by tests, not yet run live:** `session.resume`, `conversation.message` and `reply.create` (the handoff used only with `--native-voices`), and the saved-agent REST shape.
 - **Docs that disagree with each other:** the tool-call id is `call_id` on one page and `tool_call_id` on another. The code accepts both and echoes whichever arrives.
-- **Unknown until heard:** how each native voice sounds giving English instructions and reading the English-style respelling, and how well learner attempts are recognized per language.
+- **Unknown until heard:** how well learner attempts are recognized per language, and whether the respellings are right for every language.
 
 `python scripts/probe_protocol.py question.pcm` records every raw event of a real exchange, for checking the wire format after an API change.
 
 ## Limitations and next steps
 
 - Five teachable languages, one per session. Japanese and Mandarin wait on AssemblyAI's output voices, which their docs list as coming soon.
-- A voice switch drops lesson context and adds a connection gap. Carrying a short summary across in `conversation.message` is the next step.
+- Native-voice switching (`--native-voices`) drops lesson context and adds a connection gap, and the native voices read the English respelling poorly. First audio takes about 3 seconds (tool round trips plus the silence window).
 - Attempt scoring ignores accents in Latin-script text, so "ano" matches "año".
 - Terminal client only. A browser client would use the temporary-token flow and gets echo cancellation from the browser.
 - Next, in order: run the bake-off on real learner audio, add pronunciation assessment on attempt audio, add an LLM judge with blind human spot checks for translation and respelling quality.
